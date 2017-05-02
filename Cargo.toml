@@ -1,0 +1,7 @@
+[package]
+name = "feo"
+version = "0.1.0"
+authors = ["Alex Hixon <alex@alexhixon.com>"]
+
+[dependencies]
+bitflags = "0.8"

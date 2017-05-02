@@ -1,0 +1,12 @@
+# the rustflag stuff should go into the main Cargo.toml
+# but linker info should stay here since it's user local
+
+[target.arm-unknown-linux-gnueabihf]
+rustflags = [
+    "-C", "link-arg=-Tlayout.ld",
+    "-C", "link-arg=-nostartfiles",
+    "-C", "link-arg=-N",
+    "-C", "panic=abort",
+]
+
+linker = "/Users/alex/src/arm-toolchain/bin/arm-none-eabi-gcc"
