@@ -9,4 +9,5 @@ rustflags = [
     "-C", "panic=abort",
 ]
 
-linker = "/Users/alex/src/arm-toolchain/bin/arm-none-eabi-gcc"
+#linker = "/Users/alex/src/arm-toolchain/bin/arm-none-eabi-gcc"
+linker = "arm-none-eabi-gcc"
