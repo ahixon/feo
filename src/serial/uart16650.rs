@@ -1,8 +1,9 @@
 use core::ptr::{read_volatile, write_volatile};
 use core::fmt;
 use core::ptr::Unique;
+// use core::string;
 
-// const RBR:u32 	= 0x000;
+const RBR:u32 	= 0x000;
 const THR:u32 	= 0x000;
 const LSR:u32 	= 0x014;
 const FCR:u32   = 0x008;
@@ -11,6 +12,8 @@ const THR_EMPTY_BIT:u32 = (1 << 5);
 
 const FCR_FIFO_ENABLE:u32 = (1 << 0);
 const FCR_RECV_FIFO_RESET:u32 = (1 << 1);
+
+const LSR_DATA_READY:u32 = (1 << 0);
 
 pub struct Uart16650 {
 	pub base: Unique<u8>
@@ -28,6 +31,31 @@ impl Uart16650 {
 	    return Uart16650 {
 	    	base: base
 	    }
+	}
+
+	pub fn read_line(&mut self, buf: &mut [u8]) -> usize {
+		let mut buf_idx = 0;
+		unsafe {
+			let lsr_ptr = (self.base.offset(LSR as isize)) as *mut u32;
+			let rbr_ptr = (self.base.offset(RBR as isize)) as *mut u32;
+
+			loop {
+				if buf_idx >= buf.len() {
+					return buf_idx;
+				}
+
+				while read_volatile(lsr_ptr) & LSR_DATA_READY == 0 {};
+
+				let chr = (read_volatile(rbr_ptr) & ((1 << 8) - 1)) as u8;
+
+				buf[buf_idx] = chr;
+				buf_idx = buf_idx + 1;
+
+				if chr == 0xa {
+					return buf_idx;
+				}
+			}
+		}
 	}
 }
 
@@ -54,3 +82,4 @@ impl fmt::Write for Uart16650 {
         Ok(())
     }
 }
+

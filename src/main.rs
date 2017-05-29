@@ -16,13 +16,25 @@ extern crate compiler_builtins;
 mod serial;
 mod lang_items;
 
+use core::str;
+
 // mod m0;
 // use m0::{PerilpM0, M0};
 
 fn main() {
 	// print!(serial, "\x1b[20h");
 
-	println!("hey babe; going to divide by zero\n");
+	println!("i'll echo every line back at you!");
+	println!("go for it!");
+
+	let mut buf:[u8; 128] = [0; 128];
+	loop {
+		let end = serial::STDOUT.lock().read_line(&mut buf);
+
+		let s = unsafe { str::from_utf8_unchecked(&buf[..end]) };
+		print!("you wrote: {}", s);
+	}
+
 
 	// start the M0
 	// let addr:u32 = 0x250000;
