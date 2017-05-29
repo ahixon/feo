@@ -1,25 +1,33 @@
-ENTRY(_reset);
+ENTRY(main);
 
 SECTIONS {
-  . = 0x10000;
+  . = 0x200000;
 
-  .text : {
-    *(.text._reset)
-    *(.text)
+  .text : ALIGN(4) {
+    *(.text .text.*);
   }
 
-  .data : {
-    *(.data)
+  .rodata : ALIGN(4)
+  {
+    *(.rodata .rodata.*);
   }
 
-  .bss : {
-    *(.bss)
+  .data : ALIGN(4) {
+    *(.data .data.*);
   }
 
-  . = ALIGN(8);
-  . = . + 0x4000; /* 16kB of stack memory */
+  .bss : ALIGN(4) {
+    *(.bss .bss.*);
+  }
 
-  stack_top = .;
+  /*. = ALIGN(8);
+  . = . + 0x4000;
+
+  stack_top = .;*/
+
+  debug_gdb_scripts 0 (INFO) : {
+    KEEP(*(.debug_gdb_scripts))
+  }
 
   /DISCARD/ : {
     *(.ARM.*)

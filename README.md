@@ -6,4 +6,4 @@
 
 # Building
 
-	xargo --target arm-unknown-linux-gnueabihf
+	xargo build --target aarch64-unknown-linux-gnu
