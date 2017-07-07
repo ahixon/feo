@@ -34,6 +34,10 @@ use clock_init::setup_clocks;
 
 const MAX_WAIT_COUNT:u32 = 1000;
 
+const RK808_ADDR:u8 = 0x1b;			// connected to I2C0
+const SYR837_ADDR:u8 = 0x40;		// U11 (VDD_CPU_B) on IC20
+const SYR838_ADDR:u8 = 0x41;		// U8 (GPU) on I2C0
+
 #[repr(C)]
 struct rk3399_pmusgrf_regs {
 	ddr_rgn_con:[u32; 35],
@@ -143,12 +147,68 @@ fn main() {
 	let i2c = I2C(i2c_regs);
 	println!("reading from RK808...");
 
-	let mut request_data:[u8; 1] = [0; 1];
-	let data = i2c.read_from(0x1b, 0x05, &mut request_data);
-	println!("read back from device: {:?}", request_data);
+	// okay, write to RTC Year register
+	// and attempt a read back to see if write was OK
+	let mut rk808_buf:[u8; 1] = [0; 1];
+	i2c.read_from(RK808_ADDR, Some(0x23), &mut rk808_buf);
+	let current_dcdc = rk808_buf[0];
 
-	println!("i2c buf was: {:?}", i2c_regs.rki2c_rxdata[0].read().bits());
+	println!("DCDC_EN_REG: {:?}", rk808_buf);
 
+	i2c.read_from(RK808_ADDR, Some(0x24), &mut rk808_buf);
+	println!("LDO_EN_REG: {:?}", rk808_buf);
+
+	// disable LDO1, LDO2, LDO4, LDO5, LDO7
+	rk808_buf[0] = rk808_buf[0] & 
+		!(1 << 0) &
+		!(1 << 1) &
+		!(1 << 3) &
+		!(1 << 4) &
+		!(1 << 6);
+
+	i2c.write_to(RK808_ADDR, Some(0x24), &rk808_buf);
+
+	i2c.read_from(RK808_ADDR, Some(0x24), &mut rk808_buf);
+	println!("LDO_EN_REG now: {:?}", rk808_buf);
+
+	// GPU
+	i2c.read_from(SYR838_ADDR, Some(0x00), &mut rk808_buf);
+	println!("GPU VSEL0: {:?}", rk808_buf);
+
+	let disabled_syr:[u8; 1] = [151 & !(1 << 7); 1];
+	println!("Changing VSEL0 and VSEL1 to: {:?}", disabled_syr);
+
+	let res = i2c.write_to(SYR838_ADDR, Some(0x00), &disabled_syr);
+	println!("GPU VSEL0 update result: {:?}", res);
+	let res = i2c.write_to(SYR838_ADDR, Some(0x01), &disabled_syr);
+	println!("GPU VSEL1 update result: {:?}", res);
+
+	i2c.read_from(SYR838_ADDR, Some(0x00), &mut rk808_buf);
+	println!("GPU VSEL0 now: {:?}", rk808_buf);
+
+	let res = i2c.write_to(SYR837_ADDR, Some(0x00), &disabled_syr);
+	let res = i2c.write_to(SYR837_ADDR, Some(0x01), &disabled_syr);
+	println!("VDD_CPU_B update result: {:?}", res);
+
+	// time to die; disable little core
+	rk808_buf[0] = current_dcdc & !(1 << 1);
+
+	i2c.write_to(RK808_ADDR, Some(0x23), &mut rk808_buf);
+
+	i2c.read_from(RK808_ADDR, Some(0x23), &mut rk808_buf);
+	println!("DCDC_EN_REG now: {:?}", rk808_buf);
+
+	// println!("DCDC_EN_REG: {:?}", rk808_buf);
+
+	// VDD_CPU_B
+	// i2c.read_from(SYR837_ADDR, 0x00, &mut rk808_buf);
+	// println!("VDD_CPU_B VSEL0: {:?}", rk808_buf);
+
+	// rtc_alarm_year[0] = 69;
+	// println!("Updating to {:?}...", rtc_alarm_year);
+	// let res = i2c.write_to(RK808_ADDR, 0x0d, &rtc_alarm_year);
+
+	// println!("Result: {:?}...", res);
 	return;
 
 	// println!("OK, now I'll echo every line back at you!");
