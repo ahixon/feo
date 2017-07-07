@@ -1,12 +1,16 @@
 use nb;
 
-use core::any::{Any, TypeId};
+use core::any::{Any};
 use core::ops::Deref;
-use core::ptr;
+// use core::ptr;
 
 use rk3399_tools::{I2C0, i2c0};
 
+#[derive(Debug)]
 pub enum I2CError {
+    StartBitTimeout,
+    StopBitTimeout,
+
     /// Communication timeout
     Timeout,
 
@@ -29,6 +33,7 @@ unsafe impl I2CDevice for I2C0 {
 
 pub trait I2CTrait {
     fn read_from(&self, address: u8, register: u8, &mut [u8]) -> Result<usize>;
+    fn write_to(&self, address: u8, register: u8, &[u8]) -> Result<usize>;
 }
 
 const I2C_FIFO_SIZE_BYTES: u32 = 32;
@@ -40,7 +45,9 @@ const RW_BIT_MASTER_WRITE: u8 = 0;
 const BITS_PER_BYTE: u32 = 8;
 
 // TODO: fix SVD and have this as an enum
+const I2C_MODE_TX: u8 = 0b00;
 const I2C_MODE_TRX: u8 = 0b01;
+const I2C_MODE_RX: u8  = 0b10;
 
 // TODO: investigate how long clock stretching is permitted to happen for.
 // If it is a set number of clock cycles, then we can perform an operation blocking
@@ -84,8 +91,13 @@ impl<'a, U> I2C<'a, U> where U: Any + I2CDevice {
 
         // wait for finish stop interrupt to fire
         // TODO: handle timeout
+        let mut attempts = 0;
         while i2c.rki2c_ipd.read().stopipd().bit_is_clear() {
+            attempts += 1;
 
+            if attempts > 100 {
+                return Err(nb::Error::Other(I2CError::StopBitTimeout));
+            }
         }
 
         // clear the finish stop interrupt
@@ -110,7 +122,14 @@ impl<'a, U> I2C<'a, U> where U: Any + I2CDevice {
 
         // wait for finish start interrupt to fire
         // TODO: handle timeout
-        while i2c.rki2c_ipd.read().startipd().bit_is_clear() {}
+        let mut attempts = 0;
+        while i2c.rki2c_ipd.read().startipd().bit_is_clear() {
+            attempts += 1;
+
+            if attempts > 100 {
+                return Err(nb::Error::Other(I2CError::StartBitTimeout));
+            }
+        }
 
         // clear the finish start interrupt
         i2c.rki2c_ipd.modify(|_, w| w.startipd().clear_bit());
@@ -123,9 +142,10 @@ impl<'a, U> I2C<'a, U> where U: Any + I2CDevice {
         i2c.rki2c_con.write(|w| unsafe { w.bits(0) });
     }
 
-    fn terminate(&self) {
-        self.send_stop_bit();
+    fn terminate(&self) -> Result<()> {
+        self.send_stop_bit()?;
         self.disable();
+        Ok(())
     }
 }
 
@@ -248,7 +268,7 @@ where
 
                 // slave replied with NAK; terminate + return error
                 if pending_interrupts.nakrcvipd().bit_is_set() {
-                    self.terminate();
+                    let _ = self.terminate();
                     return Err(nb::Error::Other(I2CError::SlaveNak));
                 }
 
@@ -273,9 +293,107 @@ where
         }
 
         // free up bus
-        self.terminate();
+        self.terminate()?;
 
         // and return number of bytes read
         Ok(len)
+    }
+
+    fn write_to(&self, address: u8, register: u8, data: &[u8]) -> Result<usize> {
+        // FIXME: remove this eventually
+        assert!(data.len() <= 32 - 2);
+
+        self.send_start_bit()?;
+
+        let i2c = self.0;
+
+        // enable controller and enter TX mode
+        i2c.rki2c_con.modify(|_, w| unsafe { w.
+            i2c_en().set_bit().
+            i2c_mode().bits(I2C_MODE_TX)
+        });
+
+        // enable "data finished" and "nak handshake" interrupts
+        i2c.rki2c_ien.modify(|_, w| w.
+            mbtfien().set_bit().
+            nakrcvien().set_bit());
+
+        let address_bytes = match register {
+            0 => 1,
+            _ => 2
+        };
+
+        let mut len:u8 = address_bytes;
+
+        let (first_frame, remaining_frames) = match data.len() > address_bytes as usize {
+            true => {
+                let (a, b) = data.split_at(address_bytes as usize);
+                (a, Some(b))
+            },
+            _    => (data, None)
+        };
+
+        // first tx register is special case; it contains the slave address
+        // and possibly the register address
+        let mut tx_0 = (address << 1 | RW_BIT_MASTER_WRITE) as u32 |
+                   ((register as u32) << 8);
+
+        // remaining 2 bytes for first tx register
+        for (idx, byte) in first_frame.iter().enumerate() {
+            tx_0 |= (*byte as u32) << (8 * (idx + 2));
+            len += 1;
+        }
+
+        i2c.rki2c_txdata[0].write(|w| unsafe { w.bits(tx_0) });
+
+        // do any remaining tx registers
+        if remaining_frames != None {
+            let txreg_idx = 1;
+
+            for bytes_in_word in remaining_frames.unwrap().chunks(4) {
+                let mut bitstuffed:u32 = 0;
+                for (off, byte) in bytes_in_word.iter().enumerate() {
+                    bitstuffed = bitstuffed | ((*byte as u32) << (off as u32 * BITS_PER_BYTE));
+                }
+
+                i2c.rki2c_txdata[txreg_idx].write(|w| unsafe { w.bits(bitstuffed) });
+                len += 1;
+            }
+        }
+
+        // write out tx length; this initiates transfer
+        i2c.rki2c_mtxcnt.write(|w| unsafe { w.mtxcnt().bits(len) });    
+    
+        // keep checking for error states or completion
+        // TODO: move into separate function
+        let mut attempts = 0;
+        loop {
+            let pending_interrupts = i2c.rki2c_ipd.read();
+
+            // slave replied with NAK; terminate + return error
+            if pending_interrupts.nakrcvipd().bit_is_set() {
+                let _ = self.terminate();
+                return Err(nb::Error::Other(I2CError::SlaveNak));
+            }
+
+            // transmission complete
+            if pending_interrupts.mbtfipd().bit_is_set() {
+                break;
+            }
+
+            // TODO: handle timeout
+            attempts += 1;
+
+            if attempts > 100 {
+                let _ = self.terminate();
+                return Err(nb::Error::Other(I2CError::Timeout));  
+            }
+        }
+
+        // free up bus
+        self.terminate()?;
+
+        // and return number of bytes read
+        Ok(len as usize)
     }
 }
