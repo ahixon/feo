@@ -1,0 +1,11 @@
+[package]
+name = "rockchip"
+version = "0.1.0"
+authors = ["Alex Hixon <alex@alexhixon.com>"]
+
+[dependencies]
+embedded-hal = { git = "https://github.com/japaric/embedded-hal.git", rev = "7d904f515d15fd5fe7ea34e18820ea83e2651fa2" }
+rk3399-tools = { version="0.1.0", path = "../../../rk3399-tools/" }
+
+[dependencies.nb]
+git = "https://github.com/japaric/nb"
