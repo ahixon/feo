@@ -32,8 +32,8 @@ unsafe impl I2CDevice for I2C0 {
 }
 
 pub trait I2CTrait {
-    fn read_from(&self, address: u8, register: u8, &mut [u8]) -> Result<usize>;
-    fn write_to(&self, address: u8, register: u8, &[u8]) -> Result<usize>;
+    fn read_from(&self, address: u8, register: Option<u8>, &mut [u8]) -> Result<usize>;
+    fn write_to(&self, address: u8, register: Option<u8>, &[u8]) -> Result<usize>;
 }
 
 const I2C_FIFO_SIZE_BYTES: u32 = 32;
@@ -200,7 +200,7 @@ where
     //
     // After all data has been transferred, the master should then send
     // a STOP condition to release the bus.
-    fn read_from(&self, address: u8, register: u8, recvdata: &mut [u8]) -> Result<usize> {
+    fn read_from(&self, address: u8, register: Option<u8>, recvdata: &mut [u8]) -> Result<usize> {
         self.send_start_bit()?;
 
         let i2c = self.0;
@@ -216,9 +216,9 @@ where
         });
 
         // write the register address, if provided
-        if register > 0 {
+        if register != None {
             i2c.rki2c_mrxraddr.write(|w| unsafe { w.
-                sraddr().bits(register as u32).
+                sraddr().bits(register.unwrap() as u32).
                 sraddlvld().set_bit() // low byte valid
             });
         } else {
@@ -299,7 +299,7 @@ where
         Ok(len)
     }
 
-    fn write_to(&self, address: u8, register: u8, data: &[u8]) -> Result<usize> {
+    fn write_to(&self, address: u8, register: Option<u8>, data: &[u8]) -> Result<usize> {
         // FIXME: remove this eventually
         assert!(data.len() <= 32 - 2);
 
@@ -319,8 +319,8 @@ where
             nakrcvien().set_bit());
 
         let address_bytes = match register {
-            0 => 1,
-            _ => 2
+            None => 1,
+            Some(_) => 2
         };
 
         let mut len:u8 = address_bytes;
@@ -335,8 +335,10 @@ where
 
         // first tx register is special case; it contains the slave address
         // and possibly the register address
-        let mut tx_0 = (address << 1 | RW_BIT_MASTER_WRITE) as u32 |
-                   ((register as u32) << 8);
+        let mut tx_0 = (address << 1 | RW_BIT_MASTER_WRITE) as u32;
+        if register != None {
+            tx_0 |= (register.unwrap() as u32) << 8;
+        }
 
         // remaining 2 bytes for first tx register
         for (idx, byte) in first_frame.iter().enumerate() {
