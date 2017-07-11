@@ -4,7 +4,6 @@ use core::fmt::Write;
 use serial;
 
 pub struct PerilpM0 {
-	pub serial: serial::Uart16650
 	// pub peripheral_base: u32,
 	// address_ranges: [
 	// 	((0x00000000, 0x1FFFFFFF), "WT"),
@@ -126,7 +125,7 @@ impl M0 for PerilpM0 {
     		asm!("nop");
     	}
 
-    	writeln!(self.serial, "Triggering PORESETn and HRESETn...");
+    	// println!("Triggering PORESETn and HRESETn...");
 
     	// resets hresetn_cm0s_pmu and poresetn_cm0s_pmu
     	//
@@ -138,6 +137,6 @@ impl M0 for PerilpM0 {
     	//			the exception of SWJ-DP
 	    write_volatile::<u32>(PMUCRU_SOFTRST_CON(0), bits_with_writemask_set(0, 0b100100, 0));
 
-	    writeln!(self.serial, "PMU status bits: {:?}", read_volatile (PMUGRF_SOC_STATUS0));
+	    // println!("PMU status bits: {:?}", read_volatile (PMUGRF_SOC_STATUS0));
     }
 }

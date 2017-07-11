@@ -32,11 +32,33 @@ use rockchip::i2c::{I2C, I2CTrait};
 mod clock_init;
 use clock_init::setup_clocks;
 
+use core::ptr::{read_volatile, write_volatile};
+
 const MAX_WAIT_COUNT:u32 = 1000;
 
 const RK808_ADDR:u8 = 0x1b;			// connected to I2C0
 const SYR837_ADDR:u8 = 0x40;		// U11 (VDD_CPU_B) on IC20
 const SYR838_ADDR:u8 = 0x41;		// U8 (GPU) on I2C0
+
+const INA219_ADDR:u8 = 0x40;
+// something at 0x1c
+
+const FUSB302B_ADDR:u8 = 0b0100010;
+
+const INA219_REG_CONFIG:u8 = 0x00;
+const INA219_REG_SHUNTVOLTAGE:u8 = 0x01;
+const INA219_REG_BUSVOLTAGE:u8 = 0x02;
+const INA219_REG_CURRENT:u8 = 0x04;
+const INA219_REG_CALIBRATION:u8 = 0x05;
+
+const INA219_CONFIG_BVOLTAGERANGE_32V:u16 = 0x2000;
+const INA219_CONFIG_GAIN_8_320MV:u16 = 0x1800;
+const INA219_CONFIG_BADCRES_12BIT:u16 = 0x0400; // 12-bit bus res = 0..4097
+const INA219_CONFIG_SADCRES_12BIT_1S_532US:u16 = 0x0018; // 1 x 12-bit shunt sample
+const INA219_CONFIG_MODE_SANDBVOLT_CONTINUOUS:u16 = 0x0007;
+
+const PLL_MODE_SLOW:u8 = 0;
+const PLL_MODE_NORM:u8 = 1;
 
 #[repr(C)]
 struct rk3399_pmusgrf_regs {
@@ -91,71 +113,314 @@ struct rk3399_pmusgrf_regs {
 	slv_secure_con4:u32,
 }
 
+const MHZ:u32 = 1000*1000;
+
+fn rkclk_pll_get_rate_ppll() -> u32 {
+	let pmucru = unsafe { &*rk3399_tools::PMUCRU.get() };
+
+	let mode = pmucru.pmucru_ppll_con3.read().pll_work_mode().bits();
+
+	match mode {
+	    PLL_MODE_SLOW => 24 * MHZ,
+	    PLL_MODE_NORM => {
+			// integer mode
+			let mut rate64:u64 = (24 * MHZ) as u64 * pmucru.pmucru_ppll_con0.read().fbdiv().bits() as u64;
+			rate64 = rate64 / pmucru.pmucru_ppll_con1.read().refdiv().bits() as u64;
+
+			// fractional mode
+			if pmucru.pmucru_ppll_con3.read().dsmpd().bit_is_clear() {
+				let mut frac_rate64:u64 = (24 * MHZ) as u64 * pmucru.pmucru_ppll_con2.read().fracdiv().bits() as u64;
+				frac_rate64 = pmucru.pmucru_ppll_con1.read().refdiv().bits() as u64;
+
+				rate64 += frac_rate64 >> 24;
+			}
+
+			rate64 = rate64 / pmucru.pmucru_ppll_con1.read().postdiv1().bits() as u64;
+			rate64 = rate64 / pmucru.pmucru_ppll_con1.read().postdiv2().bits() as u64;
+			rate64 as u32
+	    },
+	    _ 			  => 32768 // deep slow mode
+	}
+}
+
+fn rkclk_pll_get_rate_gpll() -> u32 {
+	let cru = unsafe { &*rk3399_tools::CRU.get() };
+
+	let mode = cru.cru_gpll_con3.read().pll_work_mode().bits();
+
+	match mode {
+	    PLL_MODE_SLOW => 24 * MHZ,
+	    PLL_MODE_NORM => {
+			// integer mode
+			let mut rate64:u64 = (24 * MHZ) as u64 * cru.cru_gpll_con0.read().fbdiv().bits() as u64;
+			rate64 = rate64 / cru.cru_gpll_con1.read().refdiv().bits() as u64;
+
+			// fractional mode
+			if cru.cru_gpll_con3.read().dsmpd().bit_is_clear() {
+				let mut frac_rate64:u64 = (24 * MHZ) as u64 * cru.cru_gpll_con2.read().fracdiv().bits() as u64;
+				frac_rate64 = cru.cru_gpll_con1.read().refdiv().bits() as u64;
+
+				rate64 += frac_rate64 >> 24;
+			}
+
+			rate64 = rate64 / cru.cru_gpll_con1.read().postdiv1().bits() as u64;
+			rate64 = rate64 / cru.cru_gpll_con1.read().postdiv2().bits() as u64;
+			rate64 as u32
+	    },
+	    _ 			  => 32768 // deep slow mode
+	}
+}
+
+fn rkclk_pll_get_rate_cpll() -> u32 {
+	let cru = unsafe { &*rk3399_tools::CRU.get() };
+
+	let mode = cru.cru_cpll_con3.read().pll_work_mode().bits();
+
+	match mode {
+	    PLL_MODE_SLOW => 24 * MHZ,
+	    PLL_MODE_NORM => {
+			// integer mode
+			let mut rate64:u64 = (24 * MHZ) as u64 * cru.cru_cpll_con0.read().fbdiv().bits() as u64;
+			rate64 = rate64 / cru.cru_cpll_con1.read().refdiv().bits() as u64;
+
+			// fractional mode
+			if cru.cru_cpll_con3.read().dsmpd().bit_is_clear() {
+				let mut frac_rate64:u64 = (24 * MHZ) as u64 * cru.cru_cpll_con2.read().fracdiv().bits() as u64;
+				frac_rate64 = cru.cru_cpll_con1.read().refdiv().bits() as u64;
+
+				rate64 += frac_rate64 >> 24;
+			}
+
+			rate64 = rate64 / cru.cru_cpll_con1.read().postdiv1().bits() as u64;
+			rate64 = rate64 / cru.cru_cpll_con1.read().postdiv2().bits() as u64;
+			rate64 as u32
+	    },
+	    _ 			  => 32768 // deep slow mode
+	}
+}
+
+fn rkclk_get_i2c0_clk() -> u32 {
+	let pmu_pll = rkclk_pll_get_rate_ppll();
+	let pmucru = unsafe { &*rk3399_tools::PMUCRU.get() };
+
+	let div = pmucru.pmucru_clksel_con2.read().i2c0_div_con().bits() as u32 + 1;
+	return pmu_pll / div;
+}
+
+fn rkclk_get_i2c1_clk() -> u32 {
+	let pmu_pll = rkclk_pll_get_rate_ppll();
+	let cru = unsafe { &*rk3399_tools::CRU.get() };
+
+	let div = cru.cru_clksel_con61.read().clk_i2c1_div_con().bits() as u32 + 1;
+	let sel = cru.cru_clksel_con61.read().clk_i2c1_pll_sel().bit();
+
+	if sel {
+		// general pll
+		rkclk_pll_get_rate_gpll() / div
+	} else {
+		// codec pll
+		rkclk_pll_get_rate_cpll() / div
+	}
+}
+
+fn rkclk_get_i2c4_clk() -> u32 {
+	let pmu_pll = rkclk_pll_get_rate_ppll();
+	let pmucru = unsafe { &*rk3399_tools::PMUCRU.get() };
+
+	let div = pmucru.pmucru_clksel_con3.read().i2c4_div_con().bits() as u32 + 1;
+	return pmu_pll / div;
+}
+
+fn rk_ceil(a:u32, b:u32) -> u32  {
+	let _a = a as u64;
+	let _b = b as u64;
+
+	((_a + _b  - 1) / _b) as u32
+}
+
+fn i2c_get_div(div:u32) -> (u32, u32) {
+	if div % 2 == 0 {
+		(div / 2, div / 2)
+	} else {
+		(rk_ceil(div, 2), div / 2)
+	}
+}
+
+fn i2c4_set_clk(i2c4_regs:&rk3399_tools::I2C4, scl_rate:u32) -> () {
+	let i2c_rate = rkclk_get_i2c4_clk();
+
+	let div = rk_ceil(i2c_rate, scl_rate * 8) - 2;
+	let (divh, divl) = if div < 0 {
+		(0, 0)
+	} else {
+		i2c_get_div(div)
+	};
+
+	i2c4_regs.rki2c_clkdiv.write(|w| unsafe { w.
+		clkdivh().bits(divh as u16).
+		clkdivl().bits(divl as u16)
+	});
+}
+
+fn i2c1_set_clk(i2c1_regs:&rk3399_tools::I2C1, scl_rate:u32) -> () {
+	let i2c_rate = rkclk_get_i2c1_clk();
+
+	let div = rk_ceil(i2c_rate, scl_rate * 8) - 2;
+	let (divh, divl) = if div < 0 {
+		(0, 0)
+	} else {
+		i2c_get_div(div)
+	};
+
+	i2c1_regs.rki2c_clkdiv.write(|w| unsafe { w.
+		clkdivh().bits(divh as u16).
+		clkdivl().bits(divl as u16)
+	});
+}
+
 fn main() {
-	// print!(serial, "\x1b[20h");
-
 	let grf = unsafe { &*rk3399_tools::GRF.get() };
-	println!("Chip version: {:x}", grf.grf_chip_id_addr.read().bits());
-
-	// connect PMCU JTAG
-	// first, setup IOMUX to select JTAG
 	let pmugrf = unsafe { &*rk3399_tools::PMUGRF.get() };
 
+	println!("Chip version: {:x}", grf.grf_chip_id_addr.read().bits());
+
+	// setup iomux to select PMU JTAG and I2C4 lines
 	pmugrf.pmugrf_gpio1b_iomux.modify(|_, w| unsafe {
 		w.
-		gpio1b1_sel().bits(0). 	// pmum0jtag_tck
-		gpio1b2_sel().bits(0)	// pmum0jtag_tms
+		write_enable().bits(
+			3 << 8 |
+			3 << 6 |
+			3 << 4 |
+			3 << 2
+		).
+		gpio1b1_sel().bits(1). 	// pmum0jtag_tck
+		gpio1b2_sel().bits(1).	// pmum0jtag_tms
+		gpio1b3_sel().bits(1).	// i2c4 sda
+		gpio1b4_sel().bits(1)	// i2c4 scl
 	});
 
+	let i2c4_regs = unsafe { &*rk3399_tools::I2C4.get() };
+	let i2c4 = I2C(i2c4_regs);
+	i2c4_set_clk(i2c4_regs, 100 * 1000); // 100KHz
+
+	// setup iomux to select I2C1 lines
+	grf.grf_gpio4a_iomux.modify(|_, w| unsafe {
+		w.
+		write_enable().bits(
+			3 << 2 |
+			3 << 4).
+		gpio4a1_sel().bits(1). 	// i2c1 sda
+		gpio4a2_sel().bits(1)	// i2c1 scl
+	});
+
+	let i2c1_regs = unsafe { &*rk3399_tools::I2C1.get() };
+	let i2c1 = I2C(i2c1_regs);
+	i2c1_set_clk(i2c1_regs, 100 * 1000); // 100KHz
+
 	// and enable SWD for the core
-	// that is, set sgrf_mcu_dbgen to 1
-	// lives in sgrf_pmu_con0[5], which ISN'T IN THE REF DOC :(
+	// that is, set sgrf_mcu_dbgen to 1 (sgrf_pmu_con0[5])
 	let mut pmusgrf:*mut rk3399_pmusgrf_regs = 0xff33_0000  as *mut rk3399_pmusgrf_regs;
 	unsafe {
 		let mut pmu_con = &mut (*pmusgrf).pmu_con;
 		let mut sgrf_pmu_con0:*mut u32 = &mut pmu_con[0];
-		*sgrf_pmu_con0 = *sgrf_pmu_con0 | (1 << 5);
+
+		// has write enable bits too
+		write_volatile(sgrf_pmu_con0, read_volatile(sgrf_pmu_con0) | (1 << 5) | (1 << (5 + 16)));
 	}
 
-	println!("SWD for PMU enabled\n");
+	// memory fence
+	unsafe { asm!("dsb sy"); }
 
 	// start the M0
-	// let addr:u32 = 0x250000;
-	// println!("Starting M0 at 0x{:x}...", addr);
-	// let mut littleguy = PerilpM0 { serial: 
-	// 	serial::Uart16650 {
-	// 		base: unsafe { 
-	// 			Unique::new (0xFF1A0000 as *mut u8)  // UART2
-	// 		}
-	// 	}
-	// };
+	let addr:u32 = 0x250000;
+	println!("Starting M0 at 0x{:x}...", addr);
+	let mut littleguy = PerilpM0 { };
 
-	// unsafe {
-	// 	littleguy.setup (addr);
-	// 	littleguy.on ();
-	// }
-
-	// return;
-
-	// setup_clocks();
-	// println!("finished clock setup!\n");
-
+	unsafe {
+		littleguy.setup (addr);
+		littleguy.on ();
+	}
 
 	// try to read i2c
-	// register 0x28 on rk808 should read back 0b00011111 = 31
-	let i2c_regs = unsafe { &*rk3399_tools::I2C0.get() };
-	let i2c = I2C(i2c_regs);
-	println!("reading from RK808...");
+	let i2c0_regs = unsafe { &*rk3399_tools::I2C0.get() };
+	let i2c0 = I2C(i2c0_regs);
 
-	// okay, write to RTC Year register
-	// and attempt a read back to see if write was OK
+	// bus probe
+	// for i in 0..0x99 {
+	// 	let mut buf:[u8; 1] = [0; 1];
+	// 	let res = i2c4.read_from(i, Some(0x01), &mut buf);
+	// 	println!("read from 0x{:x}: {:?} {:?}", i, res, buf);	
+	// }
+	
+	// from Adafruit_INA219::setCalibration_32V_2A(void):
+	let ina219_calValue:u16 = 4096;
+	let ina219_currentDivider_mA = 10;
+	let ina219_powerDivider_mW = 2;
+
+	// calibrate INA219
+	let calbuf:[u8; 2] = [((ina219_calValue >> 8) & 0xff) as u8, (ina219_calValue & 0xff) as u8];
+	i2c4.write_to(INA219_ADDR, Some(INA219_REG_CALIBRATION), &calbuf).expect(
+		"writing INA219 calibration register");
+
+	let config:u16 = INA219_CONFIG_BVOLTAGERANGE_32V |
+		INA219_CONFIG_GAIN_8_320MV | 
+		INA219_CONFIG_BADCRES_12BIT |
+        INA219_CONFIG_SADCRES_12BIT_1S_532US |
+        INA219_CONFIG_MODE_SANDBVOLT_CONTINUOUS;
+
+    let setupbuf:[u8; 2] = [((config >> 8) & 0xff) as u8, (config & 0xff) as u8];
+	i2c4.write_to(INA219_ADDR, Some(INA219_REG_CONFIG), &setupbuf).expect(
+		"writing INA219 config register");
+
+	loop {
+		// read bus voltage
+		let mut ina219buf:[u8; 2] = [0; 2];
+		i2c4.read_from(INA219_ADDR, Some(INA219_REG_BUSVOLTAGE), &mut ina219buf).expect(
+			"reading INA219 bus voltage");
+
+		let busvolt_resp:u16 = (ina219buf[0] as u16) << 8 | ina219buf[1] as u16;
+		let busvolt_raw:u16 = (busvolt_resp >> 3) * 4;
+
+		let busvolt = (busvolt_raw as f32) * 0.001;
+		println!("Bus voltage: {:?}V", busvolt);
+
+		// read shunt voltage
+		i2c4.read_from(INA219_ADDR, Some(INA219_REG_SHUNTVOLTAGE), &mut ina219buf).expect(
+			"reading INA219 shunt voltage");
+
+		let shuntvolt_raw:u16 = (ina219buf[0] as u16) << 8 | ina219buf[1] as u16;
+		let shuntvolt_mv = (busvolt_raw as f32) * 0.01;
+		println!("Shunt voltage: {:?}mV", shuntvolt_mv);
+
+		let loadvoltage = busvolt + (shuntvolt_mv / 1000.0);
+		println!("Load voltage: {:?}V", loadvoltage);
+
+		// read current
+		i2c4.read_from(INA219_ADDR, Some(INA219_REG_CURRENT), &mut ina219buf).expect(
+			"reading INA219 current");
+
+		let current_raw:u16 = (ina219buf[0] as u16) << 8 | ina219buf[1] as u16;
+		let current_float:f32 = current_raw as f32;
+		let current = current_float / ina219_currentDivider_mA as f32;
+
+		println!("Current: {:?}mA", current);
+
+		for i in 1..10000 {
+			// unsafe { asm!("wfi") };
+			unsafe { asm!("nop") };
+		}
+
+		return;
+	}
+
+	// register 0x28 on rk808 should read back 0b00011111 = 31
 	let mut rk808_buf:[u8; 1] = [0; 1];
-	i2c.read_from(RK808_ADDR, Some(0x23), &mut rk808_buf);
+	i2c0.read_from(RK808_ADDR, Some(0x23), &mut rk808_buf);
 	let current_dcdc = rk808_buf[0];
 
 	println!("DCDC_EN_REG: {:?}", rk808_buf);
 
-	i2c.read_from(RK808_ADDR, Some(0x24), &mut rk808_buf);
+	i2c0.read_from(RK808_ADDR, Some(0x24), &mut rk808_buf);
 	println!("LDO_EN_REG: {:?}", rk808_buf);
 
 	// disable LDO1, LDO2, LDO4, LDO5, LDO7
@@ -166,49 +431,55 @@ fn main() {
 		!(1 << 4) &
 		!(1 << 6);
 
-	i2c.write_to(RK808_ADDR, Some(0x24), &rk808_buf);
+	i2c0.write_to(RK808_ADDR, Some(0x24), &rk808_buf);
 
-	i2c.read_from(RK808_ADDR, Some(0x24), &mut rk808_buf);
+	i2c0.read_from(RK808_ADDR, Some(0x24), &mut rk808_buf);
 	println!("LDO_EN_REG now: {:?}", rk808_buf);
 
 	// GPU
-	i2c.read_from(SYR838_ADDR, Some(0x00), &mut rk808_buf);
+	i2c0.read_from(SYR838_ADDR, Some(0x00), &mut rk808_buf);
 	println!("GPU VSEL0: {:?}", rk808_buf);
+
+	i2c0.read_from(SYR838_ADDR, Some(0x05), &mut rk808_buf);
+	println!("GPU VGOOD: {:?}", rk808_buf);
 
 	let disabled_syr:[u8; 1] = [151 & !(1 << 7); 1];
 	println!("Changing VSEL0 and VSEL1 to: {:?}", disabled_syr);
 
-	let res = i2c.write_to(SYR838_ADDR, Some(0x00), &disabled_syr);
+	let res = i2c0.write_to(SYR838_ADDR, Some(0x00), &disabled_syr);
 	println!("GPU VSEL0 update result: {:?}", res);
-	let res = i2c.write_to(SYR838_ADDR, Some(0x01), &disabled_syr);
+	let res = i2c0.write_to(SYR838_ADDR, Some(0x01), &disabled_syr);
 	println!("GPU VSEL1 update result: {:?}", res);
 
-	i2c.read_from(SYR838_ADDR, Some(0x00), &mut rk808_buf);
+	i2c0.read_from(SYR838_ADDR, Some(0x00), &mut rk808_buf);
 	println!("GPU VSEL0 now: {:?}", rk808_buf);
 
-	let res = i2c.write_to(SYR837_ADDR, Some(0x00), &disabled_syr);
-	let res = i2c.write_to(SYR837_ADDR, Some(0x01), &disabled_syr);
-	println!("VDD_CPU_B update result: {:?}", res);
+	// let res = i2c0.write_to(SYR837_ADDR, Some(0x00), &disabled_syr);
+	// let res = i2c0.write_to(SYR837_ADDR, Some(0x01), &disabled_syr);
+	// println!("VDD_CPU_B update result: {:?}", res);
 
-	// time to die; disable little core
-	rk808_buf[0] = current_dcdc & !(1 << 1);
+	// disable VSW0 and VSW1
+	rk808_buf[0] = current_dcdc & !(1 << 5) & !(1 << 6);
 
-	i2c.write_to(RK808_ADDR, Some(0x23), &mut rk808_buf);
+	i2c0.write_to(RK808_ADDR, Some(0x23), &mut rk808_buf);
 
-	i2c.read_from(RK808_ADDR, Some(0x23), &mut rk808_buf);
+	i2c0.read_from(RK808_ADDR, Some(0x23), &mut rk808_buf);
 	println!("DCDC_EN_REG now: {:?}", rk808_buf);
 
 	// println!("DCDC_EN_REG: {:?}", rk808_buf);
 
 	// VDD_CPU_B
-	// i2c.read_from(SYR837_ADDR, 0x00, &mut rk808_buf);
+	// i2c0.read_from(SYR837_ADDR, 0x00, &mut rk808_buf);
 	// println!("VDD_CPU_B VSEL0: {:?}", rk808_buf);
 
 	// rtc_alarm_year[0] = 69;
 	// println!("Updating to {:?}...", rtc_alarm_year);
-	// let res = i2c.write_to(RK808_ADDR, 0x0d, &rtc_alarm_year);
+	// let res = i2c0.write_to(RK808_ADDR, 0x0d, &rtc_alarm_year);
 
 	// println!("Result: {:?}...", res);
+
+	// setup_clocks();
+	// println!("finished clock setup!\n");
 	return;
 
 	// println!("OK, now I'll echo every line back at you!");
