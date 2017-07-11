@@ -57,6 +57,8 @@ const INA219_CONFIG_BADCRES_12BIT:u16 = 0x0400; // 12-bit bus res = 0..4097
 const INA219_CONFIG_SADCRES_12BIT_1S_532US:u16 = 0x0018; // 1 x 12-bit shunt sample
 const INA219_CONFIG_MODE_SANDBVOLT_CONTINUOUS:u16 = 0x0007;
 
+const ina219_currentDivider_mA:u16 = 10;
+
 const PLL_MODE_SLOW:u8 = 0;
 const PLL_MODE_NORM:u8 = 1;
 
@@ -278,6 +280,40 @@ fn i2c1_set_clk(i2c1_regs:&rk3399_tools::I2C1, scl_rate:u32) -> () {
 	});
 }
 
+fn read_ina219(i2c4:&I2C<rk3399_tools::I2C4>) {
+	// read bus voltage
+	let mut ina219buf:[u8; 2] = [0; 2];
+	i2c4.read_from(INA219_ADDR, Some(INA219_REG_BUSVOLTAGE), &mut ina219buf).expect(
+		"reading INA219 bus voltage");
+
+	let busvolt_resp:u16 = (ina219buf[0] as u16) << 8 | ina219buf[1] as u16;
+	let busvolt_raw:u16 = (busvolt_resp >> 3) * 4;
+
+	let busvolt = (busvolt_raw as f32) * 0.001;
+	println!("Bus voltage: {:?}V", busvolt);
+
+	// read shunt voltage
+	i2c4.read_from(INA219_ADDR, Some(INA219_REG_SHUNTVOLTAGE), &mut ina219buf).expect(
+		"reading INA219 shunt voltage");
+
+	let shuntvolt_raw:u16 = (ina219buf[0] as u16) << 8 | ina219buf[1] as u16;
+	let shuntvolt_mv = (busvolt_raw as f32) * 0.01;
+	println!("Shunt voltage: {:?}mV", shuntvolt_mv);
+
+	let loadvoltage = busvolt + (shuntvolt_mv / 1000.0);
+	println!("Load voltage: {:?}V", loadvoltage);
+
+	// read current
+	i2c4.read_from(INA219_ADDR, Some(INA219_REG_CURRENT), &mut ina219buf).expect(
+		"reading INA219 current");
+
+	let current_raw:u16 = (ina219buf[0] as u16) << 8 | ina219buf[1] as u16;
+	let current_float:f32 = current_raw as f32;
+	let current = current_float / ina219_currentDivider_mA as f32;
+
+	println!("Current: {:?}mA", current);
+}
+
 fn main() {
 	let grf = unsafe { &*rk3399_tools::GRF.get() };
 	let pmugrf = unsafe { &*rk3399_tools::PMUGRF.get() };
@@ -354,7 +390,6 @@ fn main() {
 	
 	// from Adafruit_INA219::setCalibration_32V_2A(void):
 	let ina219_calValue:u16 = 4096;
-	let ina219_currentDivider_mA = 10;
 	let ina219_powerDivider_mW = 2;
 
 	// calibrate INA219
@@ -372,46 +407,7 @@ fn main() {
 	i2c4.write_to(INA219_ADDR, Some(INA219_REG_CONFIG), &setupbuf).expect(
 		"writing INA219 config register");
 
-	loop {
-		// read bus voltage
-		let mut ina219buf:[u8; 2] = [0; 2];
-		i2c4.read_from(INA219_ADDR, Some(INA219_REG_BUSVOLTAGE), &mut ina219buf).expect(
-			"reading INA219 bus voltage");
-
-		let busvolt_resp:u16 = (ina219buf[0] as u16) << 8 | ina219buf[1] as u16;
-		let busvolt_raw:u16 = (busvolt_resp >> 3) * 4;
-
-		let busvolt = (busvolt_raw as f32) * 0.001;
-		println!("Bus voltage: {:?}V", busvolt);
-
-		// read shunt voltage
-		i2c4.read_from(INA219_ADDR, Some(INA219_REG_SHUNTVOLTAGE), &mut ina219buf).expect(
-			"reading INA219 shunt voltage");
-
-		let shuntvolt_raw:u16 = (ina219buf[0] as u16) << 8 | ina219buf[1] as u16;
-		let shuntvolt_mv = (busvolt_raw as f32) * 0.01;
-		println!("Shunt voltage: {:?}mV", shuntvolt_mv);
-
-		let loadvoltage = busvolt + (shuntvolt_mv / 1000.0);
-		println!("Load voltage: {:?}V", loadvoltage);
-
-		// read current
-		i2c4.read_from(INA219_ADDR, Some(INA219_REG_CURRENT), &mut ina219buf).expect(
-			"reading INA219 current");
-
-		let current_raw:u16 = (ina219buf[0] as u16) << 8 | ina219buf[1] as u16;
-		let current_float:f32 = current_raw as f32;
-		let current = current_float / ina219_currentDivider_mA as f32;
-
-		println!("Current: {:?}mA", current);
-
-		for i in 1..10000 {
-			// unsafe { asm!("wfi") };
-			unsafe { asm!("nop") };
-		}
-
-		return;
-	}
+	read_ina219(&i2c4);
 
 	// register 0x28 on rk808 should read back 0b00011111 = 31
 	let mut rk808_buf:[u8; 1] = [0; 1];
@@ -465,6 +461,12 @@ fn main() {
 
 	i2c0.read_from(RK808_ADDR, Some(0x23), &mut rk808_buf);
 	println!("DCDC_EN_REG now: {:?}", rk808_buf);
+
+	read_ina219(&i2c4);
+
+	loop {
+	    unsafe { asm!("wfi"); }
+	}
 
 	// println!("DCDC_EN_REG: {:?}", rk808_buf);
 
