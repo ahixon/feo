@@ -4,7 +4,7 @@ use core::any::{Any};
 use core::ops::Deref;
 // use core::ptr;
 
-use rk3399_tools::{I2C0, i2c0};
+use rk3399_tools::{I2C0, I2C1, I2C2, I2C3, I2C4, i2c0};
 
 #[derive(Debug)]
 pub enum I2CError {
@@ -27,15 +27,19 @@ pub unsafe trait I2CDevice: Deref<Target = i2c0::RegisterBlock> {
     
 }
 
-unsafe impl I2CDevice for I2C0 {
-
-}
+unsafe impl I2CDevice for I2C0 { }
+unsafe impl I2CDevice for I2C1 { }
+unsafe impl I2CDevice for I2C2 { }
+unsafe impl I2CDevice for I2C3 { }
+unsafe impl I2CDevice for I2C4 { }
 
 pub trait I2CTrait {
     fn read_from(&self, address: u8, register: Option<u8>, &mut [u8]) -> Result<usize>;
     fn write_to(&self, address: u8, register: Option<u8>, &[u8]) -> Result<usize>;
 }
 
+// so, datasheet says max 32 bytes, and I2C code in uboot has the same constant
+// however, there are 8 RXDATA registers, so you can get up to 8 * 4 byte = 32 bytes.. oh right.
 const I2C_FIFO_SIZE_BYTES: u32 = 32;
 
 // 8th bit in first I2C frame
@@ -48,6 +52,8 @@ const BITS_PER_BYTE: u32 = 8;
 const I2C_MODE_TX: u8 = 0b00;
 const I2C_MODE_TRX: u8 = 0b01;
 const I2C_MODE_RX: u8  = 0b10;
+
+const TIMEOUT_LOOP: u32 = 10000;
 
 // TODO: investigate how long clock stretching is permitted to happen for.
 // If it is a set number of clock cycles, then we can perform an operation blocking
@@ -95,7 +101,8 @@ impl<'a, U> I2C<'a, U> where U: Any + I2CDevice {
         while i2c.rki2c_ipd.read().stopipd().bit_is_clear() {
             attempts += 1;
 
-            if attempts > 100 {
+            if attempts > TIMEOUT_LOOP {
+                self.disable();
                 return Err(nb::Error::Other(I2CError::StopBitTimeout));
             }
         }
@@ -126,7 +133,8 @@ impl<'a, U> I2C<'a, U> where U: Any + I2CDevice {
         while i2c.rki2c_ipd.read().startipd().bit_is_clear() {
             attempts += 1;
 
-            if attempts > 100 {
+            if attempts > TIMEOUT_LOOP {
+                self.disable();
                 return Err(nb::Error::Other(I2CError::StartBitTimeout));
             }
         }
@@ -226,18 +234,18 @@ where
             i2c.rki2c_mrxraddr.reset();
         }
 
+        let mut len = 0;
+
         // controller can read up to I2C_FIFO_SIZE_BYTES bytes per transaction
-        let len = recvdata.len();
+        // so, group the buffer into that number of transactions with the I2C controller
+        let mut transaction_it = recvdata.chunks_mut(I2C_FIFO_SIZE_BYTES as usize).peekable();
 
-        let mut it = recvdata.chunks_mut((I2C_FIFO_SIZE_BYTES / 4) as usize).peekable();
-        let mut rxbuf_idx = 0;
-
-        while it.peek() != None {
-            let chunk = it.next().unwrap();
+        while transaction_it.peek() != None {
+            let transaction_bytes = transaction_it.next().unwrap();
 
             // setup controller to enter TRX receive mode (see above)
-            if it.peek() == None {
-                // last chunk, so get controller to send a NAK after
+            if transaction_it.peek() == None {
+                // last FIFO chunk, so get controller to send a NAK after
                 // receive is complete
 
                 i2c.rki2c_con.modify(|_, w| unsafe { w.
@@ -260,7 +268,7 @@ where
 
             // write out expected receive size
             // controller will attempt reading after this write completes
-            i2c.rki2c_mrxcnt.write(|w| unsafe { w.mrxcnt().bits(chunk.len() as u8) });
+            i2c.rki2c_mrxcnt.write(|w| unsafe { w.mrxcnt().bits(transaction_bytes.len() as u8) });
 
             // keep checking for error states or completion
             loop {
@@ -284,12 +292,18 @@ where
             //
             // note that rxdata buffer is 32-bit, but I2C bus,
             // and thus the API buffers, are 8-bit
-            for (off, byte) in chunk.iter_mut().enumerate() {
-                let rxbytes = i2c.rki2c_rxdata[rxbuf_idx].read().bits();
-                *byte = ((rxbytes >> (off as u32 * BITS_PER_BYTE)) & ((1 << BITS_PER_BYTE) - 1)) as u8;
-            }
+            let mut rxbuf_idx = 0;
 
-            rxbuf_idx += 1;
+            for bytes_in_word in transaction_bytes.chunks_mut(4) {
+                let rxbytes = i2c.rki2c_rxdata[rxbuf_idx].read().bits();
+
+                for (off, byte) in bytes_in_word.iter_mut().enumerate() {
+                    *byte = ((rxbytes >> (off as u32 * BITS_PER_BYTE)) & ((1 << BITS_PER_BYTE) - 1)) as u8;
+                    len += 1;
+                }
+
+                rxbuf_idx += 1;
+            }
         }
 
         // free up bus
@@ -356,10 +370,10 @@ where
                 let mut bitstuffed:u32 = 0;
                 for (off, byte) in bytes_in_word.iter().enumerate() {
                     bitstuffed = bitstuffed | ((*byte as u32) << (off as u32 * BITS_PER_BYTE));
+                    len += 1;
                 }
 
                 i2c.rki2c_txdata[txreg_idx].write(|w| unsafe { w.bits(bitstuffed) });
-                len += 1;
             }
         }
 
@@ -386,7 +400,7 @@ where
             // TODO: handle timeout
             attempts += 1;
 
-            if attempts > 100 {
+            if attempts > TIMEOUT_LOOP {
                 let _ = self.terminate();
                 return Err(nb::Error::Other(I2CError::Timeout));  
             }
