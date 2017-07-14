@@ -4,12 +4,13 @@ use nb;
 use core::any::{Any, TypeId};
 use core::ops::Deref;
 use core::ptr;
+use core::fmt;
 
 #[cfg(target_arch = "aarch64")]
-use rk3399_tools::{UART0, uart0};
+use rk3399_tools::{UART0, UART1, UART2, UART3, UART4, uart0};
 
 #[cfg(not(target_arch = "aarch64"))]
-use rk3399_m0::{UART0, uart0};
+use rk3399_m0::{UART0, UART1, UART2, UART3, UART4, uart0};
 
 pub type Result<T> = ::core::result::Result<T, nb::Error<Error>>;
 
@@ -17,9 +18,11 @@ pub unsafe trait Usart: Deref<Target = uart0::RegisterBlock> {
 
 }
 
-unsafe impl Usart for UART0 {
-
-}
+unsafe impl Usart for UART0 { }
+unsafe impl Usart for UART1 { }
+unsafe impl Usart for UART2 { }
+unsafe impl Usart for UART3 { }
+unsafe impl Usart for UART4 { }
 
 /// An error
 #[derive(Debug)]
