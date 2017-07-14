@@ -1,28 +1,21 @@
 extern crate core;
-use core::ptr::{read_volatile, write_volatile};
-use core::fmt::Write;
-use serial;
-
 extern crate rk3399_tools;
 
-const PMU_CRU:u32 =    0xFF75_0000;
-const PMUCRU_CLKGATE_CON_BASE:*mut u32 = (PMU_CRU + 0x100) as *mut u32;
-unsafe fn PMUCRU_CLKGATE_CON(n: isize) -> *mut u32 { PMUCRU_CLKGATE_CON_BASE.offset(n)}
-
-pub struct PerilpM0 {
-
-}
+pub struct PerilpM0 { }
 
 pub trait M0 {
-    unsafe fn setup(&mut self, pmusgrf: &rk3399_tools::PMUSGRF, pmucru: &rk3399_tools::PMUCRU, start: u32);
-    unsafe fn on(&mut self, pmucru: &rk3399_tools::PMUCRU);
+    fn setup(&mut self, pmusgrf: &rk3399_tools::PMUSGRF,
+        pmucru: &rk3399_tools::PMUCRU, start: u32);
+
+    fn on(&mut self, pmucru: &rk3399_tools::PMUCRU);
 }
 
 // WMSK_BIT(x)       => BIT(x + 16)          => 1 << (x + 16)
 // BIT_WITH_WMASK(x) => BIT(x) | WMSK_BIT(x) => (1 << x) | (1 << (x + 16))
 // BITS_WITH_WMASK(x, y, z) -> 
 impl M0 for PerilpM0 {
-	unsafe fn setup(&mut self, pmusgrf: &rk3399_tools::PMUSGRF, pmucru: &rk3399_tools::PMUCRU, start: u32) {
+	fn setup(&mut self, pmusgrf: &rk3399_tools::PMUSGRF,
+        pmucru: &rk3399_tools::PMUCRU, start: u32) {
 
         // put PMU M0 into secure mode
 		pmusgrf.pmu_con0.write(|w| unsafe { w.
@@ -62,23 +55,24 @@ impl M0 for PerilpM0 {
         // writes 0x2 to this?
         // m0_init also disables clk_center1 but probably a bug
         // but surely we just want to set first bit to 1?
-        pmucru.pmucru_gatedis_con0.modify(|_, w| unsafe { w.
+        pmucru.pmucru_gatedis_con0.modify(|_, w| w.
             clk_pmum0_gating_dis().clear_bit().
-            clk_center1_gating_dis().set_bit()
-        });
+            clk_center1_gating_dis().set_bit()  // FIXME: do we need this?
+        );
 
-        write_volatile::<u32>(PMUCRU_CLKGATE_CON(28), 1 << (16 + 5));
+        // FIXME: do we actually need this? find out what it does!
+        // write_volatile::<u32>(PMUCRU_CLKGATE_CON(28), 1 << (16 + 5));
 
     }
 
-    unsafe fn on (&mut self, pmucru: &rk3399_tools::PMUCRU) {
+    fn on (&mut self, pmucru: &rk3399_tools::PMUCRU) {
         // enable clocks
-        pmucru.pmucru_clkgate_con2.write(|w| unsafe { w.
+        pmucru.pmucru_clkgate_con2.write(|w| w.
             fclk_cm0s_en().clear_bit().
             sclk_cm0s_en().clear_bit().
             hclk_cm0s_en().clear_bit().
             dclk_cm0s_en().clear_bit()
-        });
+        );
 
     	// pull hresetn_cm0s_pmu high
         pmucru.pmucru_softrst_con0.write(|w| unsafe { w.
@@ -87,8 +81,8 @@ impl M0 for PerilpM0 {
         });
 
     	// sleep for 5 usecs?
-    	for i in 1..99999 {
-    		asm!("nop");
+    	for _ in 1..99999 {
+    		unsafe { asm!("nop"); }
     	}
 
         // now pull poresetn_cm0s_pmu high

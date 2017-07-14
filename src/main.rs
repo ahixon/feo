@@ -13,30 +13,23 @@ extern crate bitflags;
 extern crate spin;
 extern crate compiler_builtins;
 
-use core::ptr::Unique;
-
 #[macro_use]
 mod serial;
 mod lang_items;
-
-use core::str;
 
 mod m0;
 use m0::{PerilpM0, M0};
 
 extern crate rk3399_tools;
 
-mod clock_init;
-use clock_init::setup_clocks;
-
 const M0_START_ADDRESS:u32 = 0x250000;
 
 fn main() {
+	println!("Hello from feo!");
+
 	let pmugrf = unsafe { &*rk3399_tools::PMUGRF.get() };
 	let pmucru = unsafe { &*rk3399_tools::PMUCRU.get() };
 	let pmusgrf = unsafe { &*rk3399_tools::PMUSGRF.get() };
-
-	println!("Hello from feo!");
 
 	// setup iomux to select PMU JTAG
 	pmugrf.pmugrf_gpio1b_iomux.modify(|_, w| unsafe {
@@ -54,21 +47,16 @@ fn main() {
 		sgrf_mcu_dbgen().set_bit().
 		write_mask().bits(1 << 5)
 	});
-	
-	// memory fence
-	unsafe { asm!("dsb sy"); }
 
-	// TODO: before we do this, may need to configure
-	// to enable everything into unsecure mode
+	// TODO: may need to configure to enable everything
+	// into unsecure mode, but we'll see how we go...
 
 	// start the M0
-	// println!("Booting M0 at 0x{:x}...", M0_START_ADDRESS);
 	let mut littleguy = PerilpM0 { };
-
-	unsafe {
-		littleguy.setup (pmusgrf, pmucru, M0_START_ADDRESS);
-		littleguy.on (pmucru);
-	}
+	
+	// println!("Booting M0 at 0x{:x}...", M0_START_ADDRESS);
+	littleguy.setup (pmusgrf, pmucru, M0_START_ADDRESS);
+	littleguy.on (pmucru);
 
 	unsafe { asm!("wfi"); };
 }
