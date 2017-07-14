@@ -5,7 +5,11 @@ use core::any::{Any, TypeId};
 use core::ops::Deref;
 use core::ptr;
 
+#[cfg(target_arch = "aarch64")]
 use rk3399_tools::{UART0, uart0};
+
+#[cfg(not(target_arch = "aarch64"))]
+use rk3399_m0::{UART0, uart0};
 
 pub type Result<T> = ::core::result::Result<T, nb::Error<Error>>;
 

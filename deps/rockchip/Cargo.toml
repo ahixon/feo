@@ -5,7 +5,12 @@ authors = ["Alex Hixon <alex@alexhixon.com>"]
 
 [dependencies]
 embedded-hal = { git = "https://github.com/japaric/embedded-hal.git", rev = "7d904f515d15fd5fe7ea34e18820ea83e2651fa2" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
 rk3399-tools = { version="0.1.0", path = "../../../rk3399-tools/" }
+
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
+rk3399-m0 = { version="0.1.0", path = "../../../rk3399-m0/" }
 
 [dependencies.nb]
 git = "https://github.com/japaric/nb"

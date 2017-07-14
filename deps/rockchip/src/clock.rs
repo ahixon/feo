@@ -3,7 +3,7 @@ use core::any::{Any, TypeId};
 use core::ops::Deref;
 use core::ptr;
 
-use rk3399_tools::{PMUCRU, CRU, GRF, PMUGRF};
+// use rk3399_tools::{PMUCRU, CRU, GRF, PMUGRF};
 
 
 

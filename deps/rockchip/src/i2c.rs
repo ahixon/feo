@@ -4,7 +4,11 @@ use core::any::{Any};
 use core::ops::Deref;
 // use core::ptr;
 
+#[cfg(target_arch = "aarch64")]
 use rk3399_tools::{I2C0, I2C1, I2C2, I2C3, I2C4, i2c0};
+
+#[cfg(not(target_arch = "aarch64"))]
+use rk3399_m0::{I2C0, I2C1, I2C2, I2C3, I2C4, i2c0};
 
 #[derive(Debug)]
 pub enum I2CError {
