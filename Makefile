@@ -1,4 +1,7 @@
 all:
+	# rebuild lilmemcap if needed
+	cd ../lilmemcap/ && xargo build --target thumbv6m-none-eabi && cd ..
+
 	# convert lilmemcap to flat binary
 	arm-none-eabi-objcopy -O binary ../lilmemcap/target/thumbv6m-none-eabi/debug/lilmemcap target/lilmemcap.bin
 
