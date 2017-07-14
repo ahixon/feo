@@ -16,6 +16,7 @@ SECTIONS {
     *(.data .data.*);
   }
 
+
   .bss : ALIGN(4) {
     *(.bss .bss.*);
   }
@@ -32,5 +33,10 @@ SECTIONS {
   /DISCARD/ : {
     *(.ARM.*)
     *(.note.gnu.build-id*)
+  }
+
+  . = 0x250000;
+  .lilmemcap : ALIGN(4) {
+    INCLUDE "target/lilmemcap.ld";
   }
 }

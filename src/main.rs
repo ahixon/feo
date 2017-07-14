@@ -317,6 +317,8 @@ fn read_ina219(i2c4:&I2C<rk3399_tools::I2C4>) {
 fn main() {
 	let grf = unsafe { &*rk3399_tools::GRF.get() };
 	let pmugrf = unsafe { &*rk3399_tools::PMUGRF.get() };
+	let pmucru = unsafe { &*rk3399_tools::PMUCRU.get() };
+	let pmusgrf = unsafe { &*rk3399_tools::PMUSGRF.get() };
 
 	println!("Chip version: {:x}", grf.grf_chip_id_addr.read().bits());
 
@@ -340,32 +342,30 @@ fn main() {
 	i2c4_set_clk(i2c4_regs, 100 * 1000); // 100KHz
 
 	// setup iomux to select I2C1 lines
-	grf.grf_gpio4a_iomux.modify(|_, w| unsafe {
-		w.
-		write_enable().bits(
-			3 << 2 |
-			3 << 4).
-		gpio4a1_sel().bits(1). 	// i2c1 sda
-		gpio4a2_sel().bits(1)	// i2c1 scl
-	});
+	// grf.grf_gpio4a_iomux.modify(|_, w| unsafe {
+	// 	w.
+	// 	write_enable().bits(
+	// 		3 << 2 |
+	// 		3 << 4).
+	// 	gpio4a1_sel().bits(1). 	// i2c1 sda
+	// 	gpio4a2_sel().bits(1)	// i2c1 scl
+	// });
 
-	let i2c1_regs = unsafe { &*rk3399_tools::I2C1.get() };
-	let i2c1 = I2C(i2c1_regs);
-	i2c1_set_clk(i2c1_regs, 100 * 1000); // 100KHz
+	// let i2c1_regs = unsafe { &*rk3399_tools::I2C1.get() };
+	// let i2c1 = I2C(i2c1_regs);
+	// i2c1_set_clk(i2c1_regs, 100 * 1000); // 100KHz
 
 	// and enable SWD for the core
-	// that is, set sgrf_mcu_dbgen to 1 (sgrf_pmu_con0[5])
-	let mut pmusgrf:*mut rk3399_pmusgrf_regs = 0xff33_0000  as *mut rk3399_pmusgrf_regs;
-	unsafe {
-		let mut pmu_con = &mut (*pmusgrf).pmu_con;
-		let mut sgrf_pmu_con0:*mut u32 = &mut pmu_con[0];
-
-		// has write enable bits too
-		write_volatile(sgrf_pmu_con0, read_volatile(sgrf_pmu_con0) | (1 << 5) | (1 << (5 + 16)));
-	}
-
+	pmusgrf.pmu_con0.modify(|_, w| unsafe { w.
+		sgrf_mcu_dbgen().set_bit().
+		write_mask().bits(1 << 5)
+	});
+	
 	// memory fence
 	unsafe { asm!("dsb sy"); }
+
+	// TODO: before we do this, may need to configure
+	// to enable everything into unsecure mode
 
 	// start the M0
 	let addr:u32 = 0x250000;
@@ -373,9 +373,12 @@ fn main() {
 	let mut littleguy = PerilpM0 { };
 
 	unsafe {
-		littleguy.setup (addr);
-		littleguy.on ();
+		littleguy.setup (pmusgrf, pmucru, addr);
+		littleguy.on (pmucru);
 	}
+
+	unsafe { asm!("wfi"); };
+	return;
 
 	// try to read i2c
 	let i2c0_regs = unsafe { &*rk3399_tools::I2C0.get() };
